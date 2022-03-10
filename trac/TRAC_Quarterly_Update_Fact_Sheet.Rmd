@@ -1,0 +1,528 @@
+---
+title: "TRAC Quarterly Update Fact Sheet"
+author: "Will Hopping"
+date: "3/10/2022"
+output:
+  html_notebook:
+    df_print: paged
+params:
+  color_reg: blue
+  color_up: green
+editor_options:
+  chunk_output_type: inline
+---
+This document provides information on the changes in TRAC output data as we add new partners. <br>
+The following data is from data_timestamp = 2022-03-07 <br>
+The comparisons between new and old data are filtered to lanes where the aggregation method is zip3-to-zip3 in both new and old data. 
+<br><br>
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+
+# automated script to detect bad records
+options(scipen=999)
+library(tidyverse)
+library(bigrquery)
+library(lubridate)
+library(ggthemes)
+library(DBI)
+library(ggplot2)
+library(runner)
+library(odbc)
+library(wesanderson)
+library(zoo)
+library(logger)
+library(jsonlite)
+library(stringr)
+library(rio)
+library(glue)
+
+date_of_data <- "'2022-03-07'"
+
+projectid = "freightwaves-trac-partners-dev"
+sql <- glue("SELECT
+    data_timestamp,
+    rate_type,	
+    source,	
+    od_pair,	
+    comp_key,	
+    mode,
+    CAST(miles AS FLOAT64) AS miles,
+    (CASE
+        WHEN miles < 100 THEN '0-100'
+        WHEN (miles >= 100 AND miles < 250) THEN '100-250'
+        WHEN (miles >= 250 AND miles < 450) THEN '250-450'
+        WHEN (miles >= 450 AND miles < 800) THEN '450-800'
+        WHEN (miles >= 800 AND miles < 2000) THEN '800-2000' 
+        WHEN miles >= 2000 THEN 'greater_than_2000' 
+    END) AS mileage_band,
+    CAST(effective_miles AS FLOAT64) AS effective_miles,
+    CAST(rpm AS FLOAT64) AS rpm,	
+    CAST(rpm_low AS FLOAT64) AS rpm_low,	
+    CAST(rpm_high AS FLOAT64) AS rpm_high,	
+    CAST(rate AS FLOAT64) AS rate,	
+    CAST(rate_low AS FLOAT64) AS rate_low,	
+    CAST(rate_high AS FLOAT64) AS rate_high,	
+    aggregation_method,	
+    lane_cities,	
+    lane_regions,	
+    CAST(lane_confidence_score AS FLOAT64) AS lane_confidence_score,	
+    effective_origin_radius,	
+    effective_dest_radius,
+    effective_time_interval,	
+    effective_load_count,	
+    total_load_count,	
+    CAST(coefficient_of_variation AS FLOAT64) AS coefficient_of_variation,
+    CAST(standard_error AS FLOAT64) AS standard_error,	
+    generated_on,	
+    uuid,	
+    aggregation_method_old,	
+    CAST(rpm_low_old AS FLOAT64) AS rpm_low_old,	
+    CAST(rpm_old AS FLOAT64) AS rpm_old,	
+    CAST(rpm_high_old AS FLOAT64) AS rpm_high_old,
+    CAST(rate_low_old AS FLOAT64) AS rate_low_old,
+    CAST(rate_old AS FLOAT64) AS rate_old,
+    CAST(rate_high_old AS FLOAT64) AS rate_high_old,	
+    CAST(lane_confidence_score_old AS FLOAT64) AS lane_confidence_score_old,	
+    effective_origin_radius_old,	
+    effective_dest_radius_old,	
+    effective_time_interval_old,	
+    CAST(effective_miles_old AS FLOAT64) AS effective_miles_old,	
+    effective_load_count_old,	
+    total_load_count_old,
+    CAST(coefficient_of_variation_old AS FLOAT64) AS coefficient_of_variation_old,
+    CAST(standard_error_old AS FLOAT64) AS standard_error_old
+FROM `freightwaves-trac-partners-dev.output_daily_rate_data_for_elastic.q1_4new_partners_with_current_prod`
+WHERE data_timestamp = {date_of_data}
+")
+
+#df1 <- query_exec(sql, projectid, max_pages = Inf, use_legacy_sql = FALSE)
+#df1$mileage_band[is.na(df1$mileage_band)] <- 'origin_zip3=dest_zip3'
+#write_csv(df1, "Q1_Difference_File_2022-03-07.csv")
+
+# Read in data File
+df1 <- read_csv("Q1_Difference_File_2022-03-07.csv")
+#Count of total zip3 to zip3 combinations
+total_lane_count <- 781456
+df2 <- dplyr::filter(df1, aggregation_method == "zip3-to-zip3" & aggregation_method_old == "zip3-to-zip3")
+#Color Formatting
+colFmt <- function(x,color) {
+  ret <- paste("<font color='",color,"'>",x,"</font>",sep="")
+  return(ret)
+}
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Lane Data Information <-------------#
+
+#1. Aggregation Method Updates
+get_agg_method_info <- function(table){
+  aggs_new <- table %>%
+    group_by(mode, aggregation_method) %>%
+    summarise(lanes_new = n())
+  aggs_old <- table %>%
+    group_by(mode, aggregation_method_old) %>%
+    summarise(lanes_old = n())
+  colnames(aggs_old)[2] <- 'aggregation_method'
+  agg_changes <- dplyr::left_join(aggs_old, aggs_new, by = c('mode'='mode', 'aggregation_method'='aggregation_method'))
+  agg_changes1 <- dplyr::mutate(agg_changes, percent_change = ((lanes_new - lanes_old)/lanes_old)*100)
+  agg_changes1$percent_change <- paste0(format(round(agg_changes1$percent_change, 1), nsmall = 1), '%')
+  return(agg_changes1)
+}
+
+aggs <- get_agg_method_info(df1)
+van_lanes <- paste0(substr(aggs[8,4], 1, 3), ',', substr(aggs[8,4], 4, 6))
+reefer_lanes <- paste0(substr(aggs[4,4], 1, 3), ',', substr(aggs[4,4], 4, 6))
+van_change <- paste0(aggs[8,5])
+reefer_change <- paste0(aggs[4,5])
+van_coverage <- paste0(format(round(((aggs[8,4]/total_lane_count)*100), 1), nsmall = 1), '%')
+reefer_coverage <- paste0(format(round(((aggs[4,4]/total_lane_count)*100), 1), nsmall = 1), '%')
+```
+## Meta Data and Aggregation Method Updates
+
+<br>
+
+#### Zip3-to-zip3 Lanes
+**Van** <br>
+- Number of Lanes: `r colFmt(van_lanes, params$color_reg)` <br>
+- Percent Coverage: `r colFmt(van_coverage, params$color_reg)` <br>
+- Percent Increase: `r colFmt(van_change, params$color_up)`
+
+**Reefer** <br>
+- Number of Lanes: `r colFmt(reefer_lanes, params$color_reg)`  <br>
+- Percent Coverage: `r colFmt(reefer_coverage, params$color_reg)` <br>
+- Percent Increase: `r colFmt(reefer_change, params$color_up)` <br>
+________________________________________________________________________
+<br><br>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Total Load Count Information <-------------#
+
+df1V <- dplyr::filter(df1, mode == "Van" & aggregation_method == "zip3-to-zip3" & aggregation_method_old == "zip3-to-zip3")
+df1R <- dplyr::filter(df1, mode == "Reefer" & aggregation_method == "zip3-to-zip3" & aggregation_method_old == "zip3-to-zip3")
+df1V_1 <- dplyr::select(df1V, od_pair, mode, total_load_count, total_load_count_old)
+df1R_1 <- dplyr::select(df1R, od_pair, mode, total_load_count, total_load_count_old)
+df1V_2 <- dplyr::mutate(df1V_1, delta = (100*(total_load_count - total_load_count_old)) / total_load_count_old)
+df1R_2 <- dplyr::mutate(df1R_1, delta = (100*(total_load_count - total_load_count_old)) / total_load_count_old)
+med_incr_loads_V <- median(df1V_2$delta)
+med_incr_loads_R <- median(df1R_2$delta)
+mil_V <- paste0(format(round(med_incr_loads_V, 1), nsmall = 1), '%')
+mil_R <- paste0(format(round(med_incr_loads_R, 1), nsmall = 1), '%')
+
+
+df2_gathered <- gather(df2, key="dataSet", value = "value", c("total_load_count_old", "total_load_count"))
+gg_load_counts <- 
+  ggplot(df2_gathered, aes(x=log(value), fill = mode)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~dataSet) +
+  geom_vline(xintercept = 7.5, linetype = 'dotted') +
+  geom_vline(xintercept = 5, linetype = 'dotted') +
+  geom_vline(xintercept = 2.5, linetype = 'dotted')
+
+
+```
+#### Load Counts
+
+**Changes in Load Counts** <br>
+Median % increase (Van): `r colFmt(mil_V, params$color_up)` <br>
+Median % increase (Reefer): `r colFmt(mil_R, params$color_up)` <br><br>
+**Distribution of load counts** <br>
+Note that the x-axis is the natural log of the loadcount. 
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+gg_load_counts
+```
+________________________________________________________________________
+<br>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Effective Lookback Information <-------------#
+
+timeV_1 <- dplyr::select(df1V, od_pair, mode, effective_time_interval, effective_time_interval_old)
+timeR_1 <- dplyr::select(df1R, od_pair, mode, effective_time_interval, effective_time_interval_old)
+timeV_2 <- dplyr::mutate(timeV_1, delta = (effective_time_interval - effective_time_interval_old))
+timeR_2 <- dplyr::mutate(timeR_1, delta = (effective_time_interval - effective_time_interval_old))
+med_chng_time_V <- median(timeV_2$delta)
+med_chng_time_R <- median(timeR_2$delta)
+mct_V <- paste0(format(round(med_chng_time_V, 1), nsmall = 1), ' days')
+mct_R <- paste0(format(round(med_chng_time_R, 1), nsmall = 1), ' days')
+
+df2_timeframe_gathered <- gather(df2, key="dataSet", value = "value", c("effective_time_interval_old", "effective_time_interval"))
+gg_time_frame <- 
+  ggplot(df2_timeframe_gathered, aes(x = value, fill = mode)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~dataSet) +
+  geom_vline(xintercept = 10, linetype = 'dotted')
+  
+
+```
+
+#### Effective Time Frame
+
+**Changes in Effective Timeframe** <br>
+Median change (Van): `r colFmt(mct_V, params$color_up)` <br>
+Median change (Reefer): `r colFmt(mct_R, params$color_up)` <br><br>
+**Distribution of Effective Timeframe**
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+gg_time_frame
+```
+________________________________________________________________________
+<br>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Effective Radius Information <-------------#
+
+radV_1 <- dplyr::select(df1V, od_pair, mode, effective_origin_radius, effective_origin_radius_old, effective_dest_radius, effective_dest_radius_old)
+radR_1 <- dplyr::select(df1R, od_pair, mode, effective_origin_radius, effective_origin_radius_old, effective_dest_radius, effective_dest_radius_old)
+radV_2 <- dplyr::mutate(radV_1, o_delta = (effective_origin_radius - effective_origin_radius_old))
+radR_2 <- dplyr::mutate(radR_1, o_delta = (effective_origin_radius - effective_origin_radius_old))
+radV_3 <- dplyr::mutate(radV_2, d_delta = (effective_dest_radius - effective_dest_radius_old))
+radR_3 <- dplyr::mutate(radR_2, d_delta = (effective_dest_radius - effective_dest_radius_old))
+med_chng_orad_V <- median(radV_3$o_delta)
+med_chng_orad_R <- median(radR_3$o_delta)
+med_chng_drad_V <- median(radV_3$d_delta)
+med_chng_drad_R <- median(radR_3$d_delta)
+mco_V <- paste0(format(round(med_chng_orad_V, 2), nsmall = 2), ' miles')
+mco_R <- paste0(format(round(med_chng_orad_R, 2), nsmall = 2), ' miles')
+mcd_V <- paste0(format(round(med_chng_drad_V, 2), nsmall = 2), ' miles')
+mcd_R <- paste0(format(round(med_chng_drad_R, 2), nsmall = 2), ' miles')
+
+
+df2_radius_gathered <- gather(df2, key="dataSet", value = "value", c("effective_origin_radius_old", "effective_origin_radius", "effective_dest_radius_old", "effective_dest_radius"))
+
+gg_radii <- ggplot(df2_radius_gathered, aes(x = value, fill = mode)) +
+            geom_density(alpha = 0.5) +
+            facet_wrap(~dataSet) +
+            geom_vline(xintercept = 200, linetype = 'dotted')
+
+```
+#### Effective Origin/Destination Radius
+
+**Changes in Effective Origin Radius** <br>
+Median change (Van): `r colFmt(mco_V, params$color_up)` <br>
+Median change (Reefer): `r colFmt(mco_R, params$color_up)` <br><br>
+**Changes in Effective Destination Radius** <br>
+Median change (Van): `r colFmt(mcd_V, params$color_up)` <br>
+Median change (Reefer): `r colFmt(mcd_R, params$color_up)` <br><br>
+
+**Distribution of Effective Origin/Destination Radius** 
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+gg_radii
+```
+________________________________________________________________________
+<br>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Coefficient of Variation and Standard Error Information <-------------#
+
+coef_var <- gather(df2, key="dataSet", value = "value", c("coefficient_of_variation_old", "coefficient_of_variation"))
+gg_coef_var <- 
+  ggplot(coef_var, aes(x = value, fill = mode)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~dataSet) +
+  geom_vline(xintercept = 0.13, linetype = 'longdash') +
+  geom_vline(xintercept = 0.17, linetype = 'longdash') +
+  xlim(0,0.4)
+
+st_error <- gather(df2, key="dataSet", value = "value", c("standard_error_old", "standard_error"))
+gg_st_error <- 
+  ggplot(st_error, aes(x = value, fill = mode)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~dataSet) +
+  geom_vline(xintercept = 0.05, linetype = 'longdash') +
+  xlim(0,0.25)
+
+```
+#### Coefficient of Variation and Standard Error
+
+
+**Distribution of Coefficient of Variation**<br>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+gg_coef_var
+```
+<br>
+**Distribution of Standard Error**<br>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+gg_st_error
+```
+________________________________________________________________________
+<br>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Confidence Score Information <-------------#
+
+csV <- dplyr::select(df1V, od_pair, mode, lane_confidence_score, lane_confidence_score_old)
+csR <- dplyr::select(df1R, od_pair, mode, lane_confidence_score, lane_confidence_score_old)
+csV_2 <- dplyr::mutate(csV, delta = (lane_confidence_score - lane_confidence_score_old))
+csR_2 <- dplyr::mutate(csR, delta = (lane_confidence_score - lane_confidence_score_old))
+med_chng_cs_V <- mean(csV_2$delta)
+med_chng_cs_R <- mean(csR_2$delta)
+
+cs1 <- dplyr::select(df2, od_pair, mode, lane_confidence_score, lane_confidence_score_old)
+cs2 <- cs1 %>%
+  group_by(mode, lane_confidence_score) %>%
+  summarise(counts_new = n())
+cs3 <- cs1 %>%
+  group_by(mode, lane_confidence_score_old) %>%
+  summarise(counts_old = n())
+cs4 <- dplyr::left_join(cs2, cs3, by = c("mode"="mode", "lane_confidence_score"="lane_confidence_score_old"))
+
+
+```
+#### Confidence Score distributions, New vs Old
+
+**Note:** The confidence scores for the new data use a different calculation method than the scores for the old data and are not comparable. This is simply to illustrate how they will change when the new method goes into effect. <br>
+`r cs4`<br>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Overall Rate Data Information <-------------#
+
+# 1. changes in rate info
+get_rpm_changes <- function(table){
+  df2 <- dplyr::filter(table, aggregation_method == 'zip3-to-zip3' & aggregation_method_old == 'zip3-to-zip3')
+  rpm_1 <- dplyr::select(df2, od_pair, mode, mileage_band, rpm, rpm_old)
+  rpm_2 <- dplyr::mutate(rpm_1, delta = rpm - rpm_old)
+  rpm_3 <- dplyr::mutate(rpm_2, pct_diff = ((rpm-rpm_old)/rpm_old))
+  return(rpm_3)
+}
+
+rpm <- get_rpm_changes(df1)
+rpm_less_250 <- dplyr::filter(rpm, mileage_band %in% c('0-100', '100-250', 'origin_zip3=dest_zip3'))
+rpm_greater_250 <- dplyr::filter(rpm, mileage_band %in% c('250-450', '450-800', '800-2000', 'greater_than_2000'))
+
+get_actual_rpm_change <- function(table){
+  actual_change <- table %>%
+  group_by(mode, mileage_band) %>%
+  summarise(lane_count = n(), median_absolute_change = median(abs(delta)), average_absolute_change = mean(abs(delta)), median_change = median(delta),
+            avg_change = mean(delta))
+  actual_change$median_absolute_change <- format(round(actual_change$median_absolute_change, 2), nsmall = 2)
+  actual_change$average_absolute_change <- format(round(actual_change$average_absolute_change, 2), nsmall = 2)
+  actual_change$median_change <- format(round(actual_change$median_change, 2), nsmall = 2)
+  actual_change$avg_change <- format(round(actual_change$avg_change, 2), nsmall = 2)
+  return(actual_change)
+}
+
+
+get_pct_rpm_change <- function(table){
+  actual_change <- table %>%
+    group_by(mode, mileage_band) %>%
+    summarise(lane_count = n(), median_absolute_change = median(abs(pct_diff)), average_absolute_change = mean(abs(pct_diff)), median_change =
+                median(pct_diff), avg_change = mean(pct_diff))
+  actual_change$median_absolute_change <- paste0(format(round(actual_change$median_absolute_change*100, 2), nsmall = 2), '%')
+  actual_change$average_absolute_change <- paste0(format(round(actual_change$average_absolute_change*100, 2), nsmall = 2), '%')
+  actual_change$median_change <- paste0(format(round(actual_change$median_change*100, 2), nsmall = 2), '%')
+  actual_change$avg_change <- paste0(format(round(actual_change$avg_change*100, 2), nsmall = 2), '%')
+  return(actual_change)
+}
+  
+actual_change_all_lanes <- get_actual_rpm_change(rpm)
+pct_change_all_lanes <- get_pct_rpm_change(rpm)
+
+gg_pct_under_250 <- ggplot(rpm_less_250, aes(x=mileage_band, y=pct_diff, fill=mode)) +
+  geom_violin() +
+  ggtitle("Percent Change in RPM for Shipments Less Than 250 Miles") +
+  ylab("Percent Change") +
+  xlab("Mileage Band") +
+  ylim(-.5, .75)
+
+gg_pct_over_250 <- ggplot(rpm_greater_250, aes(x=mileage_band, y=pct_diff, fill=mode)) +
+  geom_violin() +
+  ggtitle("Percent Change in RPM for Shipments Greater Than 250 Miles") +
+  ylab("Percent Change") +
+  xlab("Mileage Band") +
+  ylim(-.25, .25)
+
+gg_delta_under_250 <- ggplot(rpm_less_250, aes(x=mileage_band, y=delta, fill=mode)) +
+  geom_violin() +
+  ggtitle("Difference Between New and Old RPMs for Shipments Less Than 250 Miles") +
+  ylab("Delta RPM (New minus Old)") +
+  xlab("Mileage Band") +
+  ylim(-2.5, 7.5)
+
+gg_delta_over_250 <- ggplot(rpm_greater_250, aes(x=mileage_band, y=delta, fill=mode)) +
+  geom_violin() +
+  ggtitle("Difference Between New and Old RPMs for Shipments Greater Than 250 Miles") +
+  ylab("Delta RPM (New minus Old)") +
+  xlab("Mileage Band") +
+  ylim(-1, 1) 
+
+```
+
+## RPM Changes: All Lanes
+
+Actual change in rpm by mode and mileage band (in Dollars) <br>
+`r actual_change_all_lanes`<br>
+Percent change in rpm by mode and mileage band <br>
+`r pct_change_all_lanes`
+<br><br>
+
+**Note:** The upper and lower bounds of the y-axes in the violin plots below have been manually set. There are further outliers not being displayed, but those outliers account for a very small portion of the data. <br>
+```{r eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+gg_pct_under_250
+gg_pct_over_250
+gg_delta_under_250
+gg_delta_over_250
+```
+<br><br>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> High/Low Spread Information <-------------#
+
+highlowV_1 <- dplyr::select(df1V, od_pair, mode, rpm_high, rpm_low, rpm_high_old, rpm_low_old)
+highlowR_1 <- dplyr::select(df1R, od_pair, mode, rpm_high, rpm_low, rpm_high_old, rpm_low_old)
+highlowV_2 <- dplyr::mutate(highlowV_1, delta_old = (rpm_high_old - rpm_low_old))
+highlowR_2 <- dplyr::mutate(highlowR_1, delta_old = (rpm_high_old - rpm_low_old))
+highlowV_3 <- dplyr::mutate(highlowV_2, delta_new = (rpm_high - rpm_low))
+highlowR_3 <- dplyr::mutate(highlowR_2, delta_new = (rpm_high - rpm_low))
+med_highlow_old_V <- paste0("$",format(round(median(highlowV_3$delta_old), 2), nsmall = 2))
+med_highlow_old_R <- paste0("$",format(round(median(highlowR_3$delta_old), 2), nsmall = 2))
+med_highlow_new_V <- paste0("$",format(round(median(highlowV_3$delta_new), 2), nsmall = 2))
+med_highlow_new_R <- paste0("$",format(round(median(highlowR_3$delta_new), 2), nsmall = 2))
+
+
+highlow_delta1 <- dplyr::mutate(df2, delta_old = (rpm_high_old - rpm_low_old))
+highlow_delta2 <- dplyr::mutate(highlow_delta1, delta_new = (rpm_high - rpm_low))
+highlow_delta_gathered <- gather(highlow_delta2, key="dataSet", value = "value", c("delta_new", "delta_old"))
+gg_highlow <- 
+  ggplot(highlow_delta_gathered, aes(x = value, fill = mode)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~dataSet) +
+  geom_vline(xintercept = 0.5, linetype = 'dotted') +
+  xlim(0,2)
+  
+
+```
+#### Change in spread between High and Low RPMs
+
+**Difference Between rpm_high and rpm_low (Van)** <br>
+Median difference (Old): `r colFmt(med_highlow_old_V, params$color_up)` <br>
+Median difference (New): `r colFmt(med_highlow_new_V, params$color_up)` <br><br>
+**Difference Between rpm_high and rpm_low (Reefer)** <br>
+Median difference (Old): `r colFmt(med_highlow_old_R, params$color_up)` <br>
+Median difference (New): `r colFmt(med_highlow_new_R, params$color_up)` <br><br>
+
+**Distribution of Deltas (rpm_high - rpm_low)** 
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+gg_highlow
+```
+<br><br>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#-------------> Rate Data Information Top Volume Lanes <-------------#
+
+get_intersect_top_x_pct <- function(table, eq_type, pct_as_decimal){
+  basic1 <- dplyr::filter(table, aggregation_method == 'zip3-to-zip3' & aggregation_method_old == 'zip3-to-zip3')
+  basic2 <- dplyr::select(basic1, comp_key, od_pair, mode, total_load_count, total_load_count_old)
+  old_van <- basic2 %>%
+    select(comp_key, od_pair, mode, total_load_count_old) %>%
+    filter(mode == eq_type) %>%
+    arrange(desc(total_load_count_old))
+  old_van_t100 <- old_van[1:(ceiling(pct_as_decimal*length(old_van$comp_key))),]
+  new_van <- basic2 %>%
+    select(comp_key, od_pair, mode, total_load_count) %>%
+    filter(mode == eq_type) %>%
+    arrange(desc(total_load_count))
+  new_van_t100 <- new_van[1:(ceiling(pct_as_decimal*length(new_van$comp_key))),]
+  van_t100 <- dplyr::inner_join(old_van_t100, new_van_t100, by = c('od_pair'='od_pair', 'mode'='mode', 'comp_key'='comp_key'))
+  return(van_t100$comp_key)
+}
+
+top10pct_van <- get_intersect_top_x_pct(df1, 'Van', 0.1)
+top10pct_reefer <- get_intersect_top_x_pct(df1, 'Reefer', 0.1)
+top10_combined <- c(top10pct_van, top10pct_reefer)
+top10_df <- dplyr::filter(df1, comp_key %in% top10_combined)
+top10_df1 <- get_rpm_changes(top10_df)
+actual_change_10_lanes <- get_actual_rpm_change(top10_df1)
+pct_change_10_lanes <- get_pct_rpm_change(top10_df1)
+
+
+gg_top10_pct <- ggplot(top10_df1, aes(x=mileage_band, y=pct_diff, fill=mode)) +
+  geom_violin() +
+  ggtitle("Percent Change in RPM for Top 10% of Lanes by Volume") +
+  ylab("Percent Change") +
+  xlab("Mileage Band") +
+  ylim(-0.1, 0.25)
+
+gg_top10_delta <- ggplot(top10_df1, aes(x=mileage_band, y=delta, fill=mode)) +
+  geom_violin() +
+  ggtitle("Difference Between New and Old RPMs for Top 10% of Lanes by Volume") +
+  ylab("Delta RPM (New minus Old)") +
+  xlab("Mileage Band") +
+  ylim(-0.5, 1.25)
+
+```
+
+## RPM Changes: Top 10% of Lanes by Volume 
+
+**Note:** The top 10% of lanes by volume only exist in the mileage bands 250-450, 450-800, and 800-2000. <br>
+
+Actual change in rpm by mode and mileage band (in Dollars) <br>
+`r actual_change_10_lanes`<br>
+Percent change in rpm by mode and mileage band <br>
+`r pct_change_10_lanes`
+<br><br>
+**Note:** The upper and lower bounds of the y-axes in the violin plots below have been manually set. There are further outliers not being displayed, but those outliers account for a very small portion of the data. <br>
+```{r eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+gg_top10_pct
+gg_top10_delta
+```
+
+
